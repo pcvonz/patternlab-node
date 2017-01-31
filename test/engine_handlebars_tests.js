@@ -4,6 +4,7 @@
 var tap = require('tap');
 var path = require('path');
 var Pattern = require('../core/lib/object_factory').Pattern;
+var PatternGraph = require('../core/lib/pattern_graph').PatternGraph;
 var testPatternsPath = path.resolve(__dirname, 'files', '_handlebars-test-patterns');
 var eol = require('os').EOL;
 const util = require('./util/test_utils.js');
@@ -15,6 +16,32 @@ if (!engineLoader.handlebars) {
     test.end();
   });
   return;
+}
+
+// fake pattern lab constructor:
+// sets up a fake patternlab object, which is needed by the pattern processing
+// apparatus.
+function fakePatternLab() {
+  var fpl = {
+    graph: PatternGraph.empty(),
+    partials: {},
+    patterns: [],
+    footer: '',
+    header: '',
+    listitems: {},
+    listItemArray: [],
+    data: {
+      link: {}
+    },
+    config: require('../patternlab-config.json'),
+    package: {}
+  };
+
+  // patch the pattern source so the pattern assembler can correctly determine
+  // the "subdir"
+  fpl.config.paths.source.patterns = testPatternsPath;
+
+  return fpl;
 }
 
 
