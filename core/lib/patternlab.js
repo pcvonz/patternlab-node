@@ -1,5 +1,5 @@
 /*
- * patternlab-node - v2.9.1 - 2017
+ * patternlab-node - v2.12.0 - 2017
  *
  * Brian Muenzenmeyer, Geoff Pursell, Raphael Okon, tburny and the web community.
  * Licensed under the MIT license.
@@ -11,7 +11,6 @@
 "use strict";
 
 var diveSync = require('diveSync'),
-  glob = require('glob'),
   _ = require('lodash'),
   path = require('path'),
   chalk = require('chalk'),
@@ -20,9 +19,15 @@ var diveSync = require('diveSync'),
   pm = require('./plugin_manager'),
   fs = require('fs-extra'),
   packageInfo = require('../../package.json'),
+  dataLoader = require('./data_loader')(),
   plutils = require('./utilities'),
   jsonCopy = require('./json_copy'),
-  PatternGraph = require('./pattern_graph').PatternGraph;
+  ui = require('./ui_builder'),
+  ui_builder = new ui(),
+  pe = require('./pattern_exporter'),
+  pattern_exporter = new pe(),
+  PatternGraph = require('./pattern_graph').PatternGraph,
+  updateNotifier = require('update-notifier');
 
 //register our log events
 plutils.log.on('error', msg => console.log(msg));
@@ -39,14 +44,20 @@ console.log(
 var patternEngines = require('./pattern_engines');
 var EventEmitter = require('events').EventEmitter;
 
+//bootstrap update notifier
+updateNotifier({
+  pkg: packageInfo,
+  updateCheckInterval: 1000 * 60 * 60 * 24 // notify at most once a day
+}).notify();
+
+/**
+ * Given a path, load info from the folder to compile into a single config object.
+ * @param dataFilesPath
+ * @param fsDep
+ * @returns {{}}
+ */
 function buildPatternData(dataFilesPath, fsDep) {
-  var dataFiles = glob.sync(dataFilesPath + '*.json', {"ignore" : [dataFilesPath + 'listitems.json']});
-  var mergeObject = {};
-  dataFiles.forEach(function (filePath) {
-    var jsonData = fsDep.readJSONSync(path.resolve(filePath), 'utf8');
-    mergeObject = _.merge(mergeObject, jsonData);
-  });
-  return mergeObject;
+  return dataLoader.loadDataFromFolder(dataFilesPath, 'listitems', fsDep);
 }
 
 // GTP: these two diveSync pattern processors factored out so they can be reused
@@ -148,9 +159,7 @@ var patternlab_engine = function (config) {
   'use strict';
 
   var pa = require('./pattern_assembler'),
-    pe = require('./pattern_exporter'),
     lh = require('./lineage_hunter'),
-    ui = require('./ui_builder'),
     sm = require('./starterkit_manager'),
     Pattern = require('./object_factory').Pattern,
     CompileState = require('./object_factory').CompileState,
@@ -159,7 +168,6 @@ var patternlab_engine = function (config) {
   patternlab.engines = patternEngines;
 
   var pattern_assembler = new pa(),
-    pattern_exporter = new pe(),
     lineage_hunter = new lh();
 
   patternlab.package = fs.readJSONSync(path.resolve(__dirname, '../../package.json'));
@@ -387,6 +395,13 @@ var patternlab_engine = function (config) {
 
     // stringify this data for individual pattern rendering and use on the styleguide
     // see if patternData really needs these other duped values
+
+    // construct our extraOutput dump
+    var extraOutput = Object.assign({}, pattern.extraOutput, pattern.allMarkdown);
+    delete(extraOutput.title);
+    delete(extraOutput.state);
+    delete(extraOutput.markdown);
+
     pattern.patternData = JSON.stringify({
       cssEnabled: false,
       patternLineageExists: pattern.patternLineageExists,
@@ -409,7 +424,7 @@ var patternlab_engine = function (config) {
       patternPartial: pattern.patternPartial,
       patternState: pattern.patternState,
       patternEngineName: pattern.engine.engineName,
-      extraOutput: {}
+      extraOutput: extraOutput
     });
 
     //set the pattern-specific footer by compiling the general-footer with data, and then adding it to the meta footer
@@ -496,9 +511,9 @@ var patternlab_engine = function (config) {
       patternlab.data = {};
     }
     try {
-      patternlab.listitems = fs.readJSONSync(path.resolve(paths.source.data, 'listitems.json'));
+      patternlab.listitems = dataLoader.loadDataFromFile(path.resolve(paths.source.data, 'listitems'), fs);
     } catch (ex) {
-      plutils.warning('WARNING: missing or malformed ' + paths.source.data + 'listitems.json file.  Pattern Lab may not work without this file.');
+      plutils.warning('WARNING: missing or malformed ' + paths.source.data + 'listitems file.  Pattern Lab may not work without this file.');
       patternlab.listitems = {};
     }
     try {
@@ -528,6 +543,10 @@ var patternlab_engine = function (config) {
 
     patternlab.events.emit('patternlab-pattern-iteration-end', patternlab);
 
+    //now that all the main patterns are known, look for any links that might be within data and expand them
+    //we need to do this before expanding patterns & partials into extendedTemplates, otherwise we could lose the data -> partial reference
+    pattern_assembler.parse_data_links(patternlab);
+
     //diveSync again to recursively include partials, filling out the
     //extendedTemplate property of the patternlab.patterns elements
     // TODO we can reduce the time needed by only processing changed patterns and their partials
@@ -536,10 +555,6 @@ var patternlab_engine = function (config) {
     //take the user defined head and foot and process any data and patterns that apply
     processHeadPattern();
     processFootPattern();
-
-    //now that all the main patterns are known, look for any links that might be within data and expand them
-    //we need to do this before expanding patterns & partials into extendedTemplates, otherwise we could lose the data -> partial reference
-    pattern_assembler.parse_data_links(patternlab);
 
     //cascade any patternStates
     lineage_hunter.cascade_pattern_states(patternlab);
@@ -580,7 +595,6 @@ var patternlab_engine = function (config) {
       }
     }
 
-
     //render all patterns last, so lineageR works
     patternsToBuild.forEach(pattern => renderSinglePattern(pattern, head));
 
@@ -606,7 +620,7 @@ var patternlab_engine = function (config) {
       }
       patternlab.isBusy = true;
       buildPatterns(deletePatternDir);
-      new ui().buildFrontend(patternlab);
+      ui_builder.buildFrontend(patternlab);
       printDebug();
       patternlab.isBusy = false;
       callback();
